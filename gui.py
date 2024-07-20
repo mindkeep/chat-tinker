@@ -3,6 +3,15 @@ Main flet entry point to have a dialogue with the user and an LLM
 """
 
 import flet as ft
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionUserMessageParam,
+    ChatCompletionSystemMessageParam,
+)
+from openai import Client
+import os
+import dotenv
 
 
 class MessageEntry(ft.Row):
@@ -28,9 +37,7 @@ class MessageEntry(ft.Row):
             expand=True,
         )
         # Button to enable editing of the message
-        self.edit_button = ft.ElevatedButton(
-            text="Edit", on_click=self.on_edit
-        )
+        self.edit_button = ft.ElevatedButton(text="Edit", on_click=self.on_edit)
         # Button to save the edited message, hidden by default
         self.save_button = ft.ElevatedButton(
             text="Save", on_click=self.on_save, visible=False
@@ -40,9 +47,7 @@ class MessageEntry(ft.Row):
             text="Cancel", on_click=self.on_cancel, visible=False
         )
         # Button to delete the message
-        self.delete_button = ft.ElevatedButton(
-            text="Delete", on_click=self.on_delete
-        )
+        self.delete_button = ft.ElevatedButton(text="Delete", on_click=self.on_delete)
 
         # List of controls for easy management
         self.controls = [
@@ -118,11 +123,13 @@ class STMainPage(ft.Column):
     by sending messages and viewing a history of messages.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, client: Client) -> None:
         """
         Initialize the main page by setting up the message history, input box, and send button.
         """
         super().__init__()
+
+        self.client = client
 
         # Message history container where all messages will be displayed
         self.msg_hist = ft.Column()
@@ -130,8 +137,8 @@ class STMainPage(ft.Column):
         # Add a welcome message from the system to the message history
         self.msg_hist.controls.append(
             MessageEntry(
-                author="Setting",
-                message="Welcome to the Chat-Tinker GUI!",
+                author="System",
+                message="You are a chatbot! Be friendly and helpful.",
                 parent=self.msg_hist,
             )
         )
@@ -153,19 +160,12 @@ class STMainPage(ft.Column):
 
         # Layout for the input box and send button
         input_layout = ft.Row(
-            controls=[
-                self.input_box,
-                self.send_button
-            ],
-            alignment=ft.MainAxisAlignment.CENTER
+            controls=[self.input_box, self.send_button],
+            alignment=ft.MainAxisAlignment.CENTER,
         )
 
         # Add the message history, a divider, and the input layout to the main page controls
-        self.controls = [
-            self.msg_hist,
-            ft.Divider(),
-            input_layout
-        ]
+        self.controls = [self.msg_hist, ft.Divider(), input_layout]
 
     def on_send(self, _: ft.ControlEvent) -> None:
         """
@@ -186,7 +186,6 @@ class STMainPage(ft.Column):
 
         # Clear the input box after sending the message
         self.input_box.value = ""
-
         # Add a placeholder AI response to the message history
         response_box = MessageEntry(
             author="AI",
@@ -199,6 +198,55 @@ class STMainPage(ft.Column):
         self.update()
         self.input_box.focus()
 
+        # clear the response box to make way for the actual response
+        response_box.saved_content = ""
+
+        messages = self.gather_messages()
+        completion = self.client.chat.completions.create(
+            model="gpt-4", messages=messages, stream=True
+        )
+
+        for chunk in completion:
+            content = chunk.choices[0].delta.content
+            if content:
+                response_box.saved_content += content
+                response_box.text_box.value = response_box.saved_content
+                response_box.text_box.update()
+
+    def gather_messages(self) -> list[ChatCompletionMessageParam]:
+        """
+        Gather all messages from the message history and concatenate them into a single string.
+        """
+        messages = []
+        for control in self.msg_hist.controls:
+            if isinstance(control, MessageEntry):
+                match control.author:
+                    case "System":
+                        messages.append(
+                            ChatCompletionSystemMessageParam(
+                                role="system", content=control.saved_content
+                            )
+                        )
+                    case "You":
+                        messages.append(
+                            ChatCompletionUserMessageParam(
+                                role="user", content=control.saved_content
+                            )
+                        )
+                    case "AI":
+                        messages.append(
+                            ChatCompletionAssistantMessageParam(
+                                role="assistant", content=control.saved_content
+                            )
+                        )
+                    case _:
+                        raise ValueError(f"Unknown message author: {control.author}")
+            else:
+                raise ValueError(f"Unknown control type: {type(control)}")
+
+        print(messages)
+        return messages
+
 
 def main(page: ft.Page) -> None:
     """
@@ -210,9 +258,17 @@ def main(page: ft.Page) -> None:
     page.theme = ft.Theme(color_scheme_seed="green")
     page.theme_mode = ft.ThemeMode.DARK
     page.scroll = ft.ScrollMode.ALWAYS
-    
+
+    # Load the OpenAI API key from the environment
+    dotenv.load_dotenv()
+    openai_key = os.getenv("OPENAI_API_KEY")
+    openai_base_url = os.getenv("OPENAI_BASE_URL")
+
+    # Establish openai connection
+    client = Client(api_key=openai_key, base_url=openai_base_url)
+
     # Add the main page to the page controls
-    page.add(STMainPage())
+    page.add(STMainPage(client))
 
 
 def run(web: bool = False) -> None:
